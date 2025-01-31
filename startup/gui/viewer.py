@@ -260,6 +260,10 @@ if os.environ.get( "CYCLES_ROOT" ) and os.environ.get( "GAFFERCYCLES_HIDE_UI", "
 			functools.partial( __loadRendererSettings, os.path.join( os.path.dirname( __file__ ), "cyclesViewerSettings.gfr" ) )
 		)
 
+		GafferSceneUI.SceneView.registerRenderer(
+			"Hydra",
+			functools.partial( __loadRendererSettings, os.path.join( os.path.dirname( __file__ ), "cyclesViewerSettings.gfr" ) )
+		)
 
 if os.environ.get( "GAFFERRENDERMAN_HIDE_UI", "" ) != "1" :
 

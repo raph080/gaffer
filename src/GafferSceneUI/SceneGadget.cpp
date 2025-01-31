@@ -49,6 +49,7 @@
 #include "tbb/enumerable_thread_specific.h"
 
 #include <math.h>
+#include <iostream>
 
 using namespace std;
 using namespace boost::placeholders;
@@ -356,7 +357,12 @@ void SceneGadget::setRenderer( IECore::InternedString name )
 	m_rendererName = name;
 	IECoreScenePreview::RendererPtr newRenderer;
 	std::unique_ptr<OutputBuffer> newOutputBuffer;
+	std::cout << m_rendererName << std::endl;
 	if( m_rendererName == "OpenGL" )
+	{
+		newRenderer = IECoreScenePreview::Renderer::create( m_rendererName, IECoreScenePreview::Renderer::Interactive );
+	}
+	else if( m_rendererName == "Hydra" )
 	{
 		newRenderer = IECoreScenePreview::Renderer::create( m_rendererName, IECoreScenePreview::Renderer::Interactive );
 	}

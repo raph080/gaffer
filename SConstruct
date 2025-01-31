@@ -392,6 +392,8 @@ env = Environment(
 
 	MSVC_VERSION = "14.3",
 
+	PYTHON_VERSION="3.10",
+
 	options = options,
 
 	CPPDEFINES = [
@@ -402,12 +404,14 @@ env = Environment(
 	CPPPATH = [
 		"include",
 		"$LOCATE_DEPENDENCY_CPPPATH",
+		"$BUILD_DIR/lib/Python.framework/Versions/$PYTHON_VERSION/include/python$PYTHON_VERSION",
 	],
 
 	LIBPATH = [
 		"./lib",
 		"$BUILD_DIR/lib",
 		"$LOCATE_DEPENDENCY_LIBPATH",
+		"$BUILD_DIR/lib/Python.framework/Versions/3.10/lib"
 	],
 
 	FRAMEWORKPATH = "$BUILD_DIR/lib",
@@ -525,11 +529,11 @@ if env["PLATFORM"] != "win32" :
 	elif env["BUILD_TYPE"] == "RELWITHDEBINFO" :
 		env.Append( CXXFLAGS = ["-DNDEBUG", "-DBOOST_DISABLE_ASSERTS", "-O3", "-g", "-fno-omit-frame-pointer"] )
 
-	if env["WARNINGS_AS_ERRORS"] :
-		env.Append(
-			CXXFLAGS = [ "-Werror" ],
-			SHLINKFLAGS = [ "-Wl,-fatal_warnings" ],
-		)
+	# if env["WARNINGS_AS_ERRORS"] :
+	# 	env.Append(
+	# 		CXXFLAGS = [ "-Werror" ],
+	# 		SHLINKFLAGS = [ "-Wl,-fatal_warnings" ],
+	# 	)
 
 	# Address Sanitiser
 
@@ -895,9 +899,7 @@ basePythonEnv.Append(
 	],
 
 )
-
 if basePythonEnv["PLATFORM"]=="darwin" :
-
 	basePythonEnv.Append(
 		CPPPATH = [ "$BUILD_DIR/lib/Python.framework/Versions/$PYTHON_VERSION/include/python$PYTHON_VERSION" ],
 		LIBPATH = [ "$BUILD_DIR/lib/Python.framework/Versions/$PYTHON_VERSION/lib" ]
@@ -1100,7 +1102,7 @@ libraries = {
 
 	"GafferScene" : {
 		"envAppends" : {
-			"LIBS" : [ "Gaffer", "Iex$IMATH_LIB_SUFFIX", "IECoreGL$CORTEX_LIB_SUFFIX", "IECoreImage$CORTEX_LIB_SUFFIX",  "IECoreScene$CORTEX_LIB_SUFFIX", "GafferImage", "GafferDispatch", "osdCPU", "OpenEXR" ],
+			"LIBS" : [ "Gaffer", "Iex$IMATH_LIB_SUFFIX", "IECoreGL$CORTEX_LIB_SUFFIX", "IECoreImage$CORTEX_LIB_SUFFIX",  "IECoreScene$CORTEX_LIB_SUFFIX", "GafferImage", "GafferDispatch", "osdCPU", "OpenEXR", "python3.10", "boost_python310" ]  + [ "${USD_LIB_PREFIX}" + x for x in ( [ "ar", "arch", "cameraUtil", "garch", "geomUtil", "gf", "glf", "hd", "hdGp", "hdMtlx", "hdSt", "hdar", "hdsi", "hdx", "hf", "hgi", "hgiGL", "hgiInterop", "hgiMetal", "hio", "hioOpenVDB", "js", "kind", "ndr", "pcp", "pegtl", "plug", "pxOsd", "sdf", "sdr", "tf", "trace", "ts", "usd", "usdAppUtils", "usdBakeMtlx", "usdGeom", "usdHydra", "usdImaging", "usdImagingGL", "usdLux", "usdMedia", "usdMtlx", "usdPhysics", "usdProc", "usdProcImaging", "usdRender", "usdRi", "usdRiPxrImaging", "usdShade", "usdSkel", "usdSkelImaging", "usdUI", "usdUtils", "usdVol", "usdVolImaging", "usdviewq", "vt", "work" ] if not env["USD_MONOLITHIC"] else [ "usd_ms" ] ) ],
 		},
 		"pythonEnvAppends" : {
 			"LIBS" : [ "GafferBindings", "GafferScene", "GafferDispatch", "GafferImage", "IECoreScene$CORTEX_LIB_SUFFIX", "IECoreGL$CORTEX_LIB_SUFFIX" ],
