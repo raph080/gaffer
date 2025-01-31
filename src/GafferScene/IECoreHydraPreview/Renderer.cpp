@@ -858,32 +858,25 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 
 		HydraRenderer( RenderType renderType, const std::string &fileName, const IECore::MessageHandlerPtr &messageHandler )
 			:	m_renderType( renderType ), m_baseStateOptions( new CompoundObject ),
-				m_renderObjects( true ), m_messageHandler( messageHandler )
+				m_renderObjects( true ), m_messageHandler( messageHandler ),
+				hgi(pxr::Hgi::CreatePlatformDefaultHgi()),
+      			hgiDriver{pxr::HgiTokens->renderDriver, pxr::VtValue(hgi.get())}
 		{
 			if( renderType == SceneDescription )
 			{
 				throw IECore::Exception( "Unsupported render type" );
 			}
 
-			int WIDTH = 500;
-			int HEIGHT = 500;
-
-			pxr::GlfDrawTargetRefPtr drawTarget;
-			pxr::HgiInterop interop;
-
-			pxr::HgiUniquePtr hgi(pxr::Hgi::CreatePlatformDefaultHgi());
-			pxr::HdDriver hgiDriver{pxr::HgiTokens->renderDriver,
-									pxr::VtValue(hgi.get())};
+			
 
 			pxr::HdPluginRenderDelegateUniqueHandle renderDelegate;
-			pxr::HdRenderIndex* renderIndex;
+			
 
-			pxr::HdxTaskController* taskController;
+			
 
 			pxr::UsdImagingStageSceneIndexRefPtr stageSceneIndex;
 			pxr::HdSceneIndexBaseRefPtr sceneIndex;
 
-			pxr::HdEngine engine;
 
 			bool gpuEnabled = true;
 
@@ -1029,28 +1022,29 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 
 			// render
 
+			
 			drawTarget->Bind();
 
-			pxr::HdTaskSharedPtrVector tasks = taskController->GetRenderingTasks();
-			engine.Execute(renderIndex, &tasks);
+				pxr::HdTaskSharedPtrVector tasks = taskController->GetRenderingTasks();
+				engine.Execute(renderIndex, &tasks);
 
-			pxr::VtValue aov;
-			pxr::HgiTextureHandle aovTexture;
+				pxr::VtValue aov;
+				pxr::HgiTextureHandle aovTexture;
 
-			if (engine.GetTaskContextData(pxr::HdAovTokens->color, &aov)) {
-				if (aov.IsHolding<pxr::HgiTextureHandle>()) {
-					aovTexture = aov.Get<pxr::HgiTextureHandle>();
+				if (engine.GetTaskContextData(pxr::HdAovTokens->color, &aov)) {
+					if (aov.IsHolding<pxr::HgiTextureHandle>()) {
+						aovTexture = aov.Get<pxr::HgiTextureHandle>();
+					}
 				}
-			}
 
-			uint32_t framebuffer = 0;
-			interop.TransferToApp(hgi.get(), aovTexture, pxr::HgiTextureHandle(),
-								pxr::HgiTokens->OpenGL, pxr::VtValue(framebuffer),
-								pxr::GfVec4i(0, 0, WIDTH, HEIGHT));
+				uint32_t framebuffer = 0;
+				pxr::HgiInterop interop;
+				interop.TransferToApp(hgi.get(), aovTexture, pxr::HgiTextureHandle(),
+									pxr::HgiTokens->OpenGL, pxr::VtValue(framebuffer),
+									pxr::GfVec4i(0, 0, WIDTH, HEIGHT));
 
-			drawTarget->WriteToFile("color", "/Users/raphaeljouretz/Desktop/test.png");
-			drawTarget->Unbind();
-
+				drawTarget->WriteToFile("color", "/Users/raphaeljouretz/Desktop/test.png");
+				drawTarget->Unbind();
 		}
 
 		~HydraRenderer() override
@@ -1264,38 +1258,40 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 				State *state = baseState();
 				state->bind();
 
-				if( IECoreGL::Selector *selector = IECoreGL::Selector::currentSelector() )
-				{
-					// IECoreGL expects us to bind `selector->baseState()` here, so the
-					// selector can control a few specific parts of the state.
-					// That overrides _all_ of our own state though, including things that
-					// are crucial to accurate selection because they change the size of
-					// primitives on screen. So we need to bind the selection state and then
-					// rebind the crucial bits of our state back on top of it.
-					/// \todo Change IECoreGL::Selector so it provides a partial state object
-					/// containing only the things it needs to change.
-					IECoreGL::StatePtr shapeState = new IECoreGL::State( /* complete = */ false );
-					shapeState->add( state->get<IECoreGL::Primitive::DrawWireframe>() );
-					shapeState->add( state->get<IECoreGL::Primitive::DrawSolid>() );
-					shapeState->add( state->get<IECoreGL::Primitive::DrawOutline>() );
-					shapeState->add( state->get<IECoreGL::Primitive::DrawPoints>() );
-					shapeState->add( state->get<IECoreGL::PointsPrimitive::UseGLPoints>() );
-					shapeState->add( state->get<IECoreGL::PointsPrimitive::GLPointWidth>() );
-					shapeState->add( state->get<IECoreGL::CurvesPrimitive::UseGLLines>() );
-					shapeState->add( state->get<IECoreGL::CurvesPrimitive::IgnoreBasis>() );
-					shapeState->add( state->get<IECoreGL::CurvesPrimitive::GLLineWidth>() );
-					IECoreGL::State::ScopedBinding selectorStateBinding(
-						*selector->baseState(), const_cast<IECoreGL::State &>( *state )
-					);
-					IECoreGL::State::ScopedBinding shapeStateBinding(
-						*shapeState, const_cast<IECoreGL::State &>( *state )
-					);
-					renderObjects( state, colorSpace );
-				}
-				else
-				{
-					renderObjects( state, colorSpace );
-				}
+				
+
+				// if( IECoreGL::Selector *selector = IECoreGL::Selector::currentSelector() )
+				// {
+				// 	// IECoreGL expects us to bind `selector->baseState()` here, so the
+				// 	// selector can control a few specific parts of the state.
+				// 	// That overrides _all_ of our own state though, including things that
+				// 	// are crucial to accurate selection because they change the size of
+				// 	// primitives on screen. So we need to bind the selection state and then
+				// 	// rebind the crucial bits of our state back on top of it.
+				// 	/// \todo Change IECoreGL::Selector so it provides a partial state object
+				// 	/// containing only the things it needs to change.
+				// 	IECoreGL::StatePtr shapeState = new IECoreGL::State( /* complete = */ false );
+				// 	shapeState->add( state->get<IECoreGL::Primitive::DrawWireframe>() );
+				// 	shapeState->add( state->get<IECoreGL::Primitive::DrawSolid>() );
+				// 	shapeState->add( state->get<IECoreGL::Primitive::DrawOutline>() );
+				// 	shapeState->add( state->get<IECoreGL::Primitive::DrawPoints>() );
+				// 	shapeState->add( state->get<IECoreGL::PointsPrimitive::UseGLPoints>() );
+				// 	shapeState->add( state->get<IECoreGL::PointsPrimitive::GLPointWidth>() );
+				// 	shapeState->add( state->get<IECoreGL::CurvesPrimitive::UseGLLines>() );
+				// 	shapeState->add( state->get<IECoreGL::CurvesPrimitive::IgnoreBasis>() );
+				// 	shapeState->add( state->get<IECoreGL::CurvesPrimitive::GLLineWidth>() );
+				// 	IECoreGL::State::ScopedBinding selectorStateBinding(
+				// 		*selector->baseState(), const_cast<IECoreGL::State &>( *state )
+				// 	);
+				// 	IECoreGL::State::ScopedBinding shapeStateBinding(
+				// 		*shapeState, const_cast<IECoreGL::State &>( *state )
+				// 	);
+				// 	renderObjects( state, colorSpace );
+				// }
+				// else
+				// {
+				// 	renderObjects( state, colorSpace );
+				// }
 
 			glPopAttrib();
 			glUseProgram( prevProgram );
@@ -1415,17 +1411,17 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 
 		void renderObjects( IECoreGL::State *currentState, Visualisation::ColorSpace colorSpace )
 		{
-			IECoreGL::Selector *selector = IECoreGL::Selector::currentSelector();
+			// IECoreGL::Selector *selector = IECoreGL::Selector::currentSelector();
 
-			GLuint i = 1;
-			for( const auto &o : m_objects )
-			{
-				if( selector )
-				{
-					selector->loadName( i++ );
-				}
-				o->render( currentState, m_selection, colorSpace );
-			}
+			// GLuint i = 1;
+			// for( const auto &o : m_objects )
+			// {
+			// 	if( selector )
+			// 	{
+			// 		selector->loadName( i++ );
+			// 	}
+			// 	o->render( currentState, m_selection, colorSpace );
+			// }
 		}
 
 		void writeOutputs( const FrameBuffer *frameBuffer )
@@ -1586,6 +1582,18 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 
 		// Registration with factory
 		static Renderer::TypeDescription<HydraRenderer> g_typeDescription;
+
+		pxr::GlfDrawTargetRefPtr drawTarget;
+		pxr::HdxTaskController* taskController;
+		pxr::HdEngine engine;
+
+		int WIDTH = 500;
+		int HEIGHT = 500;
+
+		
+		pxr::HdRenderIndex* renderIndex;
+		pxr::HgiUniquePtr hgi;
+		pxr::HdDriver hgiDriver;
 
 };
 
