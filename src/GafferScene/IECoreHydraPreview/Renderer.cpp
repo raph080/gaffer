@@ -77,6 +77,42 @@
 
 #include "fmt/format.h"
 
+#include <pxr/base/gf/camera.h>
+#include <pxr/base/gf/frustum.h>
+#include <pxr/base/gf/matrix4d.h>
+#include <pxr/imaging/cameraUtil/conformWindow.h>
+#include <pxr/imaging/cameraUtil/framing.h>
+#include <pxr/imaging/glf/drawTarget.h>
+#include <pxr/imaging/hd/engine.h>
+#include <pxr/imaging/hd/pluginRenderDelegateUniqueHandle.h>
+#include <pxr/imaging/hd/renderDelegate.h>
+#include <pxr/imaging/hd/rendererPluginRegistry.h>
+#include <pxr/imaging/hd/tokens.h>
+#include <pxr/imaging/hdx/taskController.h>
+#include <pxr/imaging/hdx/tokens.h>
+#include <pxr/imaging/hgi/hgi.h>
+#include <pxr/imaging/hgi/tokens.h>
+#include <pxr/imaging/hgiInterop/hgiInterop.h>
+#include <pxr/usd/usd/prim.h>
+#include <pxr/usd/usd/stage.h>
+#include <pxr/usd/usdGeom/camera.h>
+#include <pxr/usd/usdGeom/sphere.h>
+#include <pxr/usdImaging/usdImaging/delegate.h>
+#include <pxr/usdImaging/usdImaging/sceneIndices.h>
+#include <pxr/usdImaging/usdImaging/stageSceneIndex.h>
+#include "pxr/imaging/glf/contextCaps.h"
+#include "pxr/imaging/glf/diagnostic.h"
+#include "pxr/imaging/glf/drawTarget.h"
+#include "pxr/imaging/glf/glContext.h"
+#include "pxr/imaging/garch/glDebugWindow.h"
+#include "IECoreUSD/DataAlgo.h"
+#include "IECoreScene/MeshPrimitive.h"
+
+
+
+#include <fstream>
+#include <streambuf>
+
 #include <functional>
 #include <unordered_map>
 #include <vector>
@@ -88,6 +124,203 @@ using namespace IECore;
 using namespace IECoreScene;
 using namespace IECoreGL;
 using namespace IECoreGLPreview;
+
+
+#include <pxr/imaging/hd/primvarSchema.h>
+#include <pxr/imaging/hd/primvarsSchema.h>
+#include <pxr/imaging/hd/purposeSchema.h>
+#include "pxr/imaging/hd/meshSchema.h"
+#include "pxr/imaging/hd/meshTopologySchema.h"
+#include <pxr/imaging/hd/retainedDataSource.h>
+#include <pxr/imaging/hd/overlayContainerDataSource.h>
+#include <pxr/imaging/hd/sceneIndex.h>
+#include <pxr/imaging/hd/tokens.h>
+#include <pxr/imaging/hd/visibilitySchema.h>
+#include <pxr/imaging/hd/xformSchema.h>
+
+#include "pxr/pxr.h"
+
+PXR_NAMESPACE_OPEN_SCOPE
+
+class CubeSceneIndex;
+
+TF_DECLARE_REF_PTRS(CubeSceneIndex);
+
+class CubeSceneIndex : public pxr::HdSceneIndexBase {
+    public:
+        /**
+         * @brief Create a ref pointer to a grid scene index
+         *
+         * @return CubeSceneIndexRefPtr the ref pointer to a grid scene index
+         */
+        static CubeSceneIndexRefPtr New()
+        {
+            return pxr::TfCreateRefPtr(new CubeSceneIndex());
+        }
+
+        /**
+         * @brief Construct a new grid scene index object
+         *
+         */
+        CubeSceneIndex(){
+			_primPath = pxr::SdfPath("/Cube");
+			_prim = _CreateCubePrim();
+			Populate(true);
+		}
+
+        /**
+         * @brief Populate the grid scene index
+         *
+         * @param populate true to populate the scene index, false otherwise
+         */
+        void Populate(bool populate)
+		{
+			if (populate && !_isPopulated) {
+				_SendPrimsAdded({{_primPath, pxr::HdPrimTypeTokens->mesh}});
+			}
+			else if (!populate && _isPopulated) {
+				_SendPrimsRemoved({{_primPath}});
+			}
+			_isPopulated = populate;
+		}
+
+		void SetPrimPoints(pxr::VtArray<pxr::GfVec3f> points)
+		{
+			auto hdPoints = pxr::HdRetainedTypedSampledDataSource<pxr::VtArray<pxr::GfVec3f>>::New(
+				points
+			);
+			auto hdRole = pxr::HdPrimvarSchema::BuildRoleDataSource(
+				pxr::HdPrimvarSchemaTokens->point
+			);
+			auto hdInterpolation =  pxr::HdPrimvarSchema::BuildInterpolationDataSource(
+				pxr::HdPrimvarSchemaTokens->varying
+			);
+
+			_prim.dataSource = HdOverlayContainerDataSource::New(
+				HdRetainedContainerDataSource::New(
+					HdPrimvarsSchemaTokens->primvars,
+					HdRetainedContainerDataSource::New(
+						pxr::HdPrimvarsSchemaTokens->points,
+							pxr::HdPrimvarSchema::Builder()
+								.SetPrimvarValue(hdPoints)
+								.SetRole(hdRole)
+								.SetInterpolation(hdInterpolation)
+								.Build())),
+				_prim.dataSource);
+
+			HdSceneIndexObserver::DirtiedPrimEntries entries;
+			HdDataSourceLocator locator(HdPrimvarsSchemaTokens->primvars);
+			entries.push_back({_primPath, locator});
+
+			_SendPrimsDirtied(entries);
+		}
+
+		void SetPrimTopology(pxr::VtIntArray fvc, pxr::VtIntArray fvi)
+		{
+			auto hdFvc = pxr::HdRetainedTypedSampledDataSource<pxr::VtIntArray>::New(
+				fvc
+			);
+			auto hdFvi = pxr::HdRetainedTypedSampledDataSource<pxr::VtIntArray>::New(
+				fvi
+			);
+
+			auto hdOrientaion = pxr::HdMeshTopologySchema::BuildOrientationDataSource(
+				pxr::HdMeshTopologySchemaTokens->rightHanded
+			);
+
+			_prim.dataSource = HdOverlayContainerDataSource::New(
+				HdRetainedContainerDataSource::New(
+					HdMeshSchemaTokens->mesh,
+					HdMeshSchema::Builder()
+						.SetTopology(
+							pxr::HdMeshTopologySchema::Builder()
+								.SetFaceVertexCounts(hdFvc)
+								.SetFaceVertexIndices(hdFvi)
+								.SetOrientation(hdOrientaion)
+								.Build())
+						.Build()),
+				_prim.dataSource);
+
+			HdSceneIndexObserver::DirtiedPrimEntries entries;
+			HdDataSourceLocator locator(HdMeshSchemaTokens->mesh);
+			entries.push_back({_primPath, locator});
+
+			_SendPrimsDirtied(entries);
+		}
+
+		void SetPrimXform(pxr::GfMatrix4d xform)
+		{
+			auto hdXform = pxr::HdRetainedTypedSampledDataSource<pxr::GfMatrix4d>::New(
+				xform
+			);
+
+			auto hdResetTransformStack = pxr::HdRetainedTypedSampledDataSource<bool>::New(
+				false
+			);
+
+			_prim.dataSource = HdOverlayContainerDataSource::New(
+				HdRetainedContainerDataSource::New(
+					HdXformSchemaTokens->xform,
+					pxr::HdXformSchema::Builder()
+							.SetMatrix(hdXform)
+							.SetResetXformStack(hdResetTransformStack)
+							.Build()),
+				_prim.dataSource);
+		}
+
+        /**
+         * @brief Get the prim at the given path
+         *
+         * @param primPath the path to a prim
+         * @return pxr::HdSceneIndexPrim the hydra prim
+         */
+        virtual pxr::HdSceneIndexPrim GetPrim(
+            const pxr::SdfPath& primPath) const
+		{
+			if (primPath == _primPath) return _prim;
+    		else return {pxr::TfToken(), nullptr};
+		}
+
+        /**
+         * @brief Get the child prim paths of a prim at the specified path
+         * 
+         * @param primPath the path of the prim the get the child paths from
+         * @return pxr::SdfPathVector a list with all child prim paths
+         */
+        virtual pxr::SdfPathVector GetChildPrimPaths(
+            const pxr::SdfPath& primPath) const
+		{
+			if (!_isPopulated) return {};
+    		if (primPath == pxr::SdfPath::AbsoluteRootPath()) return {_primPath};
+   			else return {};
+		}
+
+    private:
+        pxr::SdfPath _primPath;
+        pxr::HdSceneIndexPrim _prim;
+        bool _isPopulated;
+
+        /**
+         * @brief Create the grid hydra prim
+         * 
+         * @return pxr::HdSceneIndexPrim the hydra prim of the grid
+         */
+        pxr::HdSceneIndexPrim _CreateCubePrim()
+		{
+			// https://github.com/PixarAnimationStudios/OpenUSD/blob/7f5e51901961b4dbbf178a45349431882ba3591f/pxr/imaging/hd/testenv/testHdDataSource.cpp#L190
+			pxr::HdSceneIndexPrim prim = pxr::HdSceneIndexPrim(
+				{
+					pxr::HdPrimTypeTokens->mesh,
+					pxr::HdRetainedContainerDataSource::New()
+				}
+			);
+
+			return prim;
+		}
+};
+
+PXR_NAMESPACE_CLOSE_SCOPE
+
 
 //////////////////////////////////////////////////////////////////////////
 // Utilities
@@ -486,6 +719,7 @@ class OpenGLObject : public IECoreScenePreview::Renderer::ObjectInterface
 				m_attributes( attributes ),
 				m_editQueue( editQueue )
 		{
+			std::cout << "created: " << name << std::endl;
 			IECore::StringAlgo::tokenize( name, '/', m_name );
 
 			if( object )
@@ -710,59 +944,100 @@ IE_CORE_FORWARDDECLARE( OpenGLObject )
 } // namespace
 
 //////////////////////////////////////////////////////////////////////////
-// OpenGLCamera
+// HydraCamera
 //////////////////////////////////////////////////////////////////////////
 
 namespace
 {
 
-class OpenGLCamera : public OpenGLObject
+class HydraCamera : public IECoreScenePreview::Renderer::ObjectInterface
 {
 
 	public :
 
-		OpenGLCamera( const std::string &name, const IECoreScene::Camera *camera, const ConstOpenGLAttributesPtr &attributes, EditQueue &editQueue )
-			:	OpenGLObject( name, camera, attributes, editQueue )
+		HydraCamera(const std::string name): m_name(name)
 		{
-			if( camera )
-			{
-				ToGLCameraConverterPtr converter = new ToGLCameraConverter( camera );
-				m_camera = static_pointer_cast<IECoreGL::Camera>( converter->convert() );
-				m_resolution = camera->getResolution();
-			}
-			else
-			{
-				m_camera = new IECoreGL::Camera;
-				m_resolution = V2i( 640, 480 );
-			}
+		}
+
+		~HydraCamera() override
+		{
+		}
+
+		void fromGafferCamera(const IECoreScene::Camera *camera)
+		{
+			m_coreCamera = camera;
+
+			m_gfCamera.SetFStop(camera->getFStop());
+			m_gfCamera.SetFocusDistance(camera->getFocusDistance());
+			m_gfCamera.SetFocalLength(camera->getFocalLength());
+
+			const Imath::V2f planes = camera->getClippingPlanes();
+			m_gfCamera.SetClippingRange({planes[0], planes[1]});
+
+			const Imath::V2i &resolution = camera->getResolution();
+			double aspectRatio = resolution[0] / (double)resolution[1];
+
+			const Imath::V2f &fieldsOfView = camera->calculateFieldOfView();
+			double horizontalFieldOfView = fieldsOfView[0];
+
+			m_gfCamera.SetPerspectiveFromAspectRatioAndFieldOfView(
+				aspectRatio,
+				horizontalFieldOfView,
+				pxr::GfCamera::FOVDirection::FOVHorizontal
+			);
+		}
+
+		void name(std::string name)
+		{
+			m_name = name;
+		}
+
+		void link( const IECore::InternedString &type, const IECoreScenePreview::Renderer::ConstObjectSetPtr &objects ) override
+		{
 		}
 
 		void transform( const Imath::M44f &transform ) override
 		{
-			OpenGLObject::transform( transform );
-			editQueue().push( [this, transform]() {
-				m_camera->setTransform( transform );
-			} );
+			auto gfTransform = pxr::GfMatrix4d( IECoreUSD::DataAlgo::toUSD( transform ) );
+			m_gfCamera.SetTransform(gfTransform);
 		}
 
-		const IECoreGL::Camera *camera() const
+		void transform( const std::vector<Imath::M44f> &samples, const std::vector<float> &times ) override
 		{
-			return m_camera.get();
+			// TODO
 		}
 
-		const V2i getResolution() const
+		bool attributes( const IECoreScenePreview::Renderer::AttributesInterface *attributes ) override
 		{
-			return m_resolution;
+			// Attributes don't affect the camera, so the edit always "succeeds".
+			return true;
+		}
+
+		void assignID( uint32_t id ) override
+		{
+			/// \todo Implement me
+		}
+
+		pxr::GfCamera getGfCamera() const
+		{
+			return m_gfCamera;
+		}
+
+		pxr::GfVec2i getResolution() const
+		{
+			const V2i res = m_coreCamera->getResolution();
+			return {res.x, res.y};
 		}
 
 	private :
-
-		IECoreGL::CameraPtr m_camera;
-		V2i m_resolution;
+		const IECoreScene::Camera *m_coreCamera;
+		std::string m_name;
+		pxr::GfCamera m_gfCamera;
 
 };
 
-IE_CORE_FORWARDDECLARE( OpenGLCamera )
+IE_CORE_FORWARDDECLARE( HydraCamera )
+
 
 } // namespace
 
@@ -820,34 +1095,6 @@ IE_CORE_FORWARDDECLARE( OpenGLLightFilter )
 // HydraRenderer
 //////////////////////////////////////////////////////////////////////////
 
-#include <pxr/base/gf/camera.h>
-#include <pxr/base/gf/frustum.h>
-#include <pxr/base/gf/matrix4d.h>
-#include <pxr/imaging/cameraUtil/conformWindow.h>
-#include <pxr/imaging/cameraUtil/framing.h>
-#include <pxr/imaging/glf/drawTarget.h>
-#include <pxr/imaging/hd/engine.h>
-#include <pxr/imaging/hd/pluginRenderDelegateUniqueHandle.h>
-#include <pxr/imaging/hd/renderDelegate.h>
-#include <pxr/imaging/hd/rendererPluginRegistry.h>
-#include <pxr/imaging/hd/tokens.h>
-#include <pxr/imaging/hdx/taskController.h>
-#include <pxr/imaging/hdx/tokens.h>
-#include <pxr/imaging/hgi/hgi.h>
-#include <pxr/imaging/hgi/tokens.h>
-#include <pxr/imaging/hgiInterop/hgiInterop.h>
-#include <pxr/usd/usd/prim.h>
-#include <pxr/usd/usd/stage.h>
-#include <pxr/usd/usdGeom/camera.h>
-#include <pxr/usd/usdGeom/sphere.h>
-#include <pxr/usdImaging/usdImaging/delegate.h>
-#include <pxr/usdImaging/usdImaging/sceneIndices.h>
-#include <pxr/usdImaging/usdImaging/stageSceneIndex.h>
-
-#include <fstream>
-#include <iostream>
-#include <streambuf>
-
 namespace
 {
 
@@ -858,193 +1105,14 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 
 		HydraRenderer( RenderType renderType, const std::string &fileName, const IECore::MessageHandlerPtr &messageHandler )
 			:	m_renderType( renderType ), m_baseStateOptions( new CompoundObject ),
-				m_renderObjects( true ), m_messageHandler( messageHandler ),
-				hgi(pxr::Hgi::CreatePlatformDefaultHgi()),
-      			hgiDriver{pxr::HgiTokens->renderDriver, pxr::VtValue(hgi.get())}
+				m_renderObjects( true ), m_messageHandler( messageHandler )
 		{
 			if( renderType == SceneDescription )
 			{
 				throw IECore::Exception( "Unsupported render type" );
 			}
 
-			
-
-			pxr::HdPluginRenderDelegateUniqueHandle renderDelegate;
-			
-
-			
-
-			pxr::UsdImagingStageSceneIndexRefPtr stageSceneIndex;
-			pxr::HdSceneIndexBaseRefPtr sceneIndex;
-
-
-			bool gpuEnabled = true;
-
-			// init draw target
-			drawTarget = pxr::GlfDrawTarget::New(pxr::GfVec2i(WIDTH, HEIGHT));
-			drawTarget->Bind();
-			drawTarget->AddAttachment(pxr::HdAovTokens->color, GL_RGBA, GL_FLOAT, GL_RGBA);
-			drawTarget->AddAttachment(pxr::HdAovTokens->depth, GL_DEPTH_COMPONENT, GL_FLOAT,
-									GL_DEPTH_COMPONENT);
-			drawTarget->Unbind();
-
-			pxr::HdRendererPluginRegistry& registry =
-				pxr::HdRendererPluginRegistry::GetInstance();
-
-			pxr::TfToken resolvedId = registry.GetDefaultPluginId(gpuEnabled);
-			renderDelegate = registry.CreateRenderDelegate(resolvedId);
-
-			// Use the render delegate ptr (rather than 'this' ptr) for generating
-			// the unique id.
-			const std::string renderInstanceId =
-				pxr::TfStringPrintf("UsdImagingGLEngineX_%s_%p", resolvedId.GetText(),
-									(void*)renderDelegate.Get());
-
-			// Recreate the render index
-			renderIndex = pxr::HdRenderIndex::New(renderDelegate.Get(), {&hgiDriver},
-												renderInstanceId);
-
-			pxr::UsdImagingCreateSceneIndicesInfo info;
-			info.displayUnloadedPrimsWithBounds = false;
-			const pxr::UsdImagingSceneIndices sceneIndices =
-				pxr::UsdImagingCreateSceneIndices(info);
-
-			stageSceneIndex = sceneIndices.stageSceneIndex;
-			sceneIndex = sceneIndices.finalSceneIndex;
-
-			renderIndex->InsertSceneIndex(sceneIndex,
-										pxr::SdfPath("/stageSceneIndex"));
-
-			// set task controller
-			taskController = new pxr::HdxTaskController(
-				renderIndex, pxr::SdfPath("/stageSceneIndex"), gpuEnabled);
-
-			taskController->SetRenderOutputs({pxr::HdAovTokens->color});
-
-			auto gfCam = pxr::GfCamera(pxr::GfMatrix4d(1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-													0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
-													0.0, 0.0, 10.0, 1.0));
-			auto frustum = gfCam.GetFrustum();
-
-			auto renderBufferSize = pxr::GfVec2i(WIDTH, HEIGHT);
-
-			taskController->SetRenderBufferSize(renderBufferSize);
-
-			auto displayWindow =
-				pxr::GfRange2f(pxr::GfVec2f(0.0, 0.0), pxr::GfVec2f(WIDTH, HEIGHT));
-			auto dataWindow =
-				pxr::GfRect2i(pxr::GfVec2i(0, 0), pxr::GfVec2i(WIDTH, HEIGHT));
-			taskController->SetFraming(
-				pxr::CameraUtilFraming(displayWindow, dataWindow));
-			taskController->SetOverrideWindowPolicy(
-				pxr::CameraUtilConformWindowPolicy::CameraUtilMatchVertically);
-			taskController->SetFreeCameraMatrices(frustum.ComputeViewMatrix(),
-												frustum.ComputeProjectionMatrix());
-
-			auto cam_pos = frustum.GetPosition();
-			auto sceneAmbient = pxr::GfVec4f(0.01, 0.01, 0.01, 1.0);
-			auto material = pxr::GlfSimpleMaterial();
-			auto lights = pxr::GlfSimpleLightVector();
-
-			auto l = pxr::GlfSimpleLight();
-			l.SetAmbient(pxr::GfVec4f(0, 0, 0, 0));
-			l.SetPosition(pxr::GfVec4f(cam_pos[0], cam_pos[1], cam_pos[2], 1));
-			lights.push_back(l);
-
-			material.SetAmbient(pxr::GfVec4f(0.2, 0.2, 0.2, 1.0));
-			material.SetSpecular(pxr::GfVec4f(0.1, 0.1, 0.1, 1.0));
-			material.SetShininess(32.0);
-
-			pxr::GlfSimpleLightingContextRefPtr lightingContextForOpenGLState =
-				pxr::GlfSimpleLightingContext::New();
-
-			lightingContextForOpenGLState->SetLights(lights);
-			lightingContextForOpenGLState->SetMaterial(material);
-			lightingContextForOpenGLState->SetSceneAmbient(sceneAmbient);
-			lightingContextForOpenGLState->SetUseLighting(lights.size() > 0);
-
-			taskController->SetLightingState(lightingContextForOpenGLState);
-
-			// render
-
-			auto stage = pxr::UsdStage::CreateInMemory();
-			auto prim = pxr::UsdGeomSphere::Define(stage, pxr::SdfPath("/sphere"));
-
-			stageSceneIndex->SetStage(stage);
-
-			// SetTime will only react if time actually changes.
-			stageSceneIndex->SetTime(pxr::UsdTimeCode::Default());
-
-			// XXX(UsdImagingPaths): This bit is weird: we get the stage from "root",
-			// gate population by _rootPath (which may be different), and then pass
-			// root.GetPath() to hydra as the root to draw from. Note that this
-			// produces incorrect results in UsdImagingDelegate for native instancing.
-			const pxr::SdfPathVector paths = {
-				stage->GetPseudoRoot().GetPath().ReplacePrefix(
-					pxr::SdfPath::AbsoluteRootPath(), pxr::SdfPath("/stageSceneIndex"))};
-
-			// init collection
-			pxr::HdRprimCollection renderCollection;
-			renderCollection = pxr::HdRprimCollection(
-				pxr::HdTokens->geometry,
-				pxr::HdReprSelector(pxr::HdReprTokens->smoothHull));
-			renderCollection.SetRootPaths(paths);
-			taskController->SetCollection(renderCollection);
-
-			pxr::TfTokenVector renderTags;
-			renderTags.clear();
-			renderTags.reserve(4);
-			renderTags.push_back(pxr::HdRenderTagTokens->geometry);
-			renderTags.push_back(pxr::HdRenderTagTokens->proxy);
-			taskController->SetRenderTags(renderTags);
-
-			pxr::HdxRenderTaskParams params;
-			params.enableLighting = true;
-			taskController->SetRenderParams(params);
-
-			// clear color to the color AOV.
-			pxr::GfVec4f clearColor = pxr::GfVec4f(1.f, .1f, .1f, 1.0f);
-			pxr::HdAovDescriptor colorAovDesc =
-				taskController->GetRenderOutputSettings(pxr::HdAovTokens->color);
-			if (colorAovDesc.format != pxr::HdFormatInvalid) {
-				colorAovDesc.clearValue = pxr::VtValue(clearColor);
-				taskController->SetRenderOutputSettings(pxr::HdAovTokens->color,
-														colorAovDesc);
-			}
-
-			taskController->SetEnableSelection(true);
-
-			pxr::HdxSelectionTrackerSharedPtr selTracker =
-				std::make_shared<pxr::HdxSelectionTracker>();
-
-			pxr::VtValue selectionValue(selTracker);
-			engine.SetTaskContextData(pxr::HdxTokens->selectionState, selectionValue);
-
-			// render
-
-			
-			drawTarget->Bind();
-
-				pxr::HdTaskSharedPtrVector tasks = taskController->GetRenderingTasks();
-				engine.Execute(renderIndex, &tasks);
-
-				pxr::VtValue aov;
-				pxr::HgiTextureHandle aovTexture;
-
-				if (engine.GetTaskContextData(pxr::HdAovTokens->color, &aov)) {
-					if (aov.IsHolding<pxr::HgiTextureHandle>()) {
-						aovTexture = aov.Get<pxr::HgiTextureHandle>();
-					}
-				}
-
-				uint32_t framebuffer = 0;
-				pxr::HgiInterop interop;
-				interop.TransferToApp(hgi.get(), aovTexture, pxr::HgiTextureHandle(),
-									pxr::HgiTokens->OpenGL, pxr::VtValue(framebuffer),
-									pxr::GfVec4i(0, 0, WIDTH, HEIGHT));
-
-				drawTarget->WriteToFile("color", "/Users/raphaeljouretz/Desktop/test.png");
-				drawTarget->Unbind();
+			sceneIndex = pxr::CubeSceneIndex::New();
 		}
 
 		~HydraRenderer() override
@@ -1058,6 +1126,8 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 
 		void option( const IECore::InternedString &name, const IECore::Object *value ) override
 		{
+			std::cout << "option: " << name << std::endl;
+
 			IECore::MessageHandler::Scope s( m_messageHandler.get() );
 
 			if( name == "camera" )
@@ -1122,6 +1192,8 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 
 		Renderer::AttributesInterfacePtr attributes( const IECore::CompoundObject *attributes ) override
 		{
+			std::cout << "attribute: " << attributes->baseTypeName() << std::endl;
+
 			IECore::MessageHandler::Scope s( m_messageHandler.get() );
 
 			OpenGLAttributesPtr result = new OpenGLAttributes( attributes );
@@ -1131,21 +1203,24 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 
 		ObjectInterfacePtr camera( const std::string &name, const IECoreScene::Camera *camera, const AttributesInterface *attributes ) override
 		{
-			IECore::MessageHandler::Scope s( m_messageHandler.get() );
+			std::cout << "camera: " << name << std::endl;
+			std::cout << "camera attr: " << attributes << std::endl;
 
-			ConstOpenGLAttributesPtr openGLAttributes = static_cast<const OpenGLAttributes *>( attributes );
-			if( !openGLAttributes )
+			HydraCameraPtr hdCam;
+			CameraMap::const_iterator it = m_cameras.find( name );
+			if( it != m_cameras.end() )
 			{
-				ConstCompoundObjectPtr emptyAttributes = new CompoundObject;
-				openGLAttributes = new OpenGLAttributes( emptyAttributes.get() );
+				hdCam = it->second;
+			}
+			else
+			{
+				hdCam = new HydraCamera(name);
+				m_cameras[name] = hdCam;
 			}
 
-			OpenGLCameraPtr result = new OpenGLCamera( name, camera, openGLAttributes, m_editQueue );
-			m_editQueue.push( [this, result, name]() {
-				m_objects.push_back( result );
-				m_cameras[name] = result;
-			} );
-			return result;
+			hdCam->fromGafferCamera(camera);
+
+			return hdCam;
 		}
 
 		ObjectInterfacePtr light( const std::string &name, const IECore::Object *object, const AttributesInterface *attributes ) override
@@ -1168,10 +1243,40 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 
 		Renderer::ObjectInterfacePtr object( const std::string &name, const IECore::Object *object, const AttributesInterface *attributes ) override
 		{
+			if (object->typeId() == MeshPrimitive::staticTypeId())
+			{
+				auto *mesh = dynamic_cast<const IECoreScene::MeshPrimitive*>(object);
+				std::cout << mesh->interpolation() << std::endl;
+				std::cout << mesh->maxVerticesPerFace() << std::endl;
+
+				auto &verticesPerFace = mesh->verticesPerFace()->readable();
+				auto &vertexIds = mesh->vertexIds()->readable();
+
+				const V3fVectorData *p = mesh->variableData<V3fVectorData>( "P", PrimitiveVariable::Vertex );
+				const vector<Imath::V3f> &points = p->readable();
+				pxr::VtVec3fArray pts;
+				for( auto pt: points)
+					pts.push_back(pxr::GfVec3f( IECoreUSD::DataAlgo::toUSD( pt ) ));
+
+				std::cout << pxr::VtIntArray( verticesPerFace.begin(), verticesPerFace.end() ) << std::endl;
+				std::cout << pxr::VtIntArray( vertexIds.begin(), vertexIds.end() ) << std::endl;
+				// std::cout << IECoreUSD::DataAlgo::toUSD( points ) << std::endl;
+
+				if( name == "/sphere")
+				{
+					sceneIndex->SetPrimTopology(pxr::VtIntArray( verticesPerFace.begin(), verticesPerFace.end() ), pxr::VtIntArray( vertexIds.begin(), vertexIds.end() ));
+					sceneIndex->SetPrimPoints(pts);
+				}
+			}
+			std::cout << "object2: " << name << " " << object->typeId() << " " << MeshPrimitive::staticTypeId() << std::endl;
+			std::cout << "m_renderObjects: " << m_renderObjects << std::endl;
+
 			if( !m_renderObjects && !runTimeCast<const IECoreScenePreview::Placeholder>( object ) )
 			{
 				return nullptr;
 			}
+
+			std::cout << "object3: " << name << std::endl;
 
 			IECore::MessageHandler::Scope s( m_messageHandler.get() );
 
@@ -1182,6 +1287,8 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 
 		ObjectInterfacePtr object( const std::string &name, const std::vector<const IECore::Object *> &samples, const std::vector<float> &times, const AttributesInterface *attributes ) override
 		{
+			std::cout << "object1: " << name << std::endl;
+
 			return object( name, samples.front(), attributes );
 		}
 
@@ -1246,19 +1353,19 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 			const string colorSpaceString = parameter<string>( parameters, "colorSpace", "scene" );
 			const Visualisation::ColorSpace colorSpace = colorSpaceString == "scene" ? Visualisation::ColorSpace::Scene : Visualisation::ColorSpace::Display;
 
-			processQueue();
-			removeDeletedObjects();
-			CachedConverter::defaultCachedConverter()->clearUnused();
+			// processQueue();
+			// removeDeletedObjects();
+			// CachedConverter::defaultCachedConverter()->clearUnused();
 
 			GLint prevProgram;
 			glGetIntegerv( GL_CURRENT_PROGRAM, &prevProgram );
 			glPushAttrib( GL_ALL_ATTRIB_BITS );
 
-				State::bindBaseState();
-				State *state = baseState();
-				state->bind();
+				// State::bindBaseState();
+				// State *state = baseState();
+				// state->bind();
 
-				
+			
 
 				// if( IECoreGL::Selector *selector = IECoreGL::Selector::currentSelector() )
 				// {
@@ -1293,18 +1400,116 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 				// 	renderObjects( state, colorSpace );
 				// }
 
-			glPopAttrib();
-			glUseProgram( prevProgram );
-		}
+			
+			if(!hgi){
+				std::cout << "init ghi" << std::endl;
 
-		void renderBatch()
-		{
-			IECoreGL::init();
+				hgi = pxr::Hgi::CreatePlatformDefaultHgi();
+				hgiDriver.name = pxr::HgiTokens->renderDriver;
+				hgiDriver.driver = pxr::VtValue(hgi.get());
+		
+				// init draw target
 
-			processQueue();
-			CachedConverter::defaultCachedConverter()->clearUnused();
+				pxr::HdRendererPluginRegistry& registry =
+					pxr::HdRendererPluginRegistry::GetInstance();
 
-			OpenGLCameraPtr camera;
+				pxr::TfToken resolvedId = registry.GetDefaultPluginId(true);
+				renderDelegate = registry.CreateRenderDelegate(resolvedId);
+
+				// Use the render delegate ptr (rather than 'this' ptr) for generating
+				// the unique id.
+				const std::string renderInstanceId =
+					pxr::TfStringPrintf("UsdImagingGLEngineX_%s_%p", resolvedId.GetText(),
+										(void*)renderDelegate.Get());
+
+				// Recreate the render index
+				renderIndex = pxr::HdRenderIndex::New(renderDelegate.Get(), {&hgiDriver},
+													renderInstanceId);
+
+
+				renderIndex->InsertSceneIndex(sceneIndex,
+											pxr::SdfPath("/stageSceneIndex"));
+
+				// set task controller
+				taskController = new pxr::HdxTaskController(
+					renderIndex, pxr::SdfPath("/stageSceneIndex"), true);
+
+				taskController->SetRenderOutputs({pxr::HdAovTokens->color});
+
+				taskController->SetOverrideWindowPolicy(
+					pxr::CameraUtilConformWindowPolicy::CameraUtilMatchVertically);
+
+				auto cam_pos = pxr::GfVec3f(10, 10, 10);
+				auto sceneAmbient = pxr::GfVec4f(0.01, 0.01, 0.01, 1.0);
+				auto material = pxr::GlfSimpleMaterial();
+				auto lights = pxr::GlfSimpleLightVector();
+
+				auto l = pxr::GlfSimpleLight();
+				l.SetAmbient(pxr::GfVec4f(0, 0, 0, 0));
+				l.SetPosition(pxr::GfVec4f(cam_pos[0], cam_pos[1], cam_pos[2], 1));
+				lights.push_back(l);
+
+				material.SetAmbient(pxr::GfVec4f(0.2, 0.2, 0.2, 1.0));
+				material.SetSpecular(pxr::GfVec4f(0.1, 0.1, 0.1, 1.0));
+				material.SetShininess(32.0);
+
+				pxr::GlfSimpleLightingContextRefPtr lightingContextForOpenGLState =
+					pxr::GlfSimpleLightingContext::New();
+
+				lightingContextForOpenGLState->SetLights(lights);
+				lightingContextForOpenGLState->SetMaterial(material);
+				lightingContextForOpenGLState->SetSceneAmbient(sceneAmbient);
+				lightingContextForOpenGLState->SetUseLighting(lights.size() > 0);
+
+				taskController->SetLightingState(lightingContextForOpenGLState);
+
+				// render
+
+				// XXX(UsdImagingPaths): This bit is weird: we get the stage from "root",
+				// gate population by _rootPath (which may be different), and then pass
+				// root.GetPath() to hydra as the root to draw from. Note that this
+				// produces incorrect results in UsdImagingDelegate for native instancing.
+				const pxr::SdfPathVector paths = {pxr::SdfPath("/stageSceneIndex/Cube")};
+
+				// init collection
+				pxr::HdRprimCollection renderCollection;
+				renderCollection = pxr::HdRprimCollection(
+					pxr::HdTokens->geometry,
+					pxr::HdReprSelector(pxr::HdReprTokens->smoothHull));
+				renderCollection.SetRootPaths(paths);
+				taskController->SetCollection(renderCollection);
+
+				pxr::TfTokenVector renderTags;
+				renderTags.clear();
+				renderTags.reserve(4);
+				renderTags.push_back(pxr::HdRenderTagTokens->geometry);
+				renderTags.push_back(pxr::HdRenderTagTokens->proxy);
+				taskController->SetRenderTags(renderTags);
+
+				pxr::HdxRenderTaskParams params;
+				params.enableLighting = true;
+				taskController->SetRenderParams(params);
+
+				// clear color to the color AOV.
+				pxr::GfVec4f clearColor = pxr::GfVec4f(1.f, .1f, .1f, 1.0f);
+				pxr::HdAovDescriptor colorAovDesc =
+					taskController->GetRenderOutputSettings(pxr::HdAovTokens->color);
+				if (colorAovDesc.format != pxr::HdFormatInvalid) {
+					colorAovDesc.clearValue = pxr::VtValue(clearColor);
+					taskController->SetRenderOutputSettings(pxr::HdAovTokens->color,
+															colorAovDesc);
+				}
+
+				taskController->SetEnableSelection(true);
+
+				pxr::HdxSelectionTrackerSharedPtr selTracker =
+					std::make_shared<pxr::HdxSelectionTracker>();
+
+				pxr::VtValue selectionValue(selTracker);
+				engine.SetTaskContextData(pxr::HdxTokens->selectionState, selectionValue);
+			}
+
+			HydraCameraPtr camera;
 			if( m_camera != "" )
 			{
 				CameraMap::const_iterator it = m_cameras.find( m_camera );
@@ -1313,50 +1518,64 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 					camera = it->second;
 				}
 			}
-			else
-			{
-				camera = new OpenGLCamera( "/defaultCamera", nullptr, nullptr, m_editQueue );
-			}
 
-			// We don't want to render the visualiser of the camera we're looking through.  For the viewport,
-			// we do this using SceneView::deleteObjectFilter, but here, instead of setting up a filter,
-			// we just delete the camera from the list of things to render.
-			m_objects.erase( std::remove( m_objects.begin(), m_objects.end(), camera), m_objects.end() );
+			const pxr::GfVec2i resolution = camera->getResolution();
+			int width = resolution[0] * 2;
+			int height = resolution[1] * 2;
 
-			const V2i resolution = camera->getResolution();
-			IECoreGL::FrameBufferPtr frameBuffer = new FrameBuffer;
-			frameBuffer->setColor( new ColorTexture( resolution.x, resolution.y ) );
-			IECoreGL::Exception::throwIfError();
-			frameBuffer->setDepth( new DepthTexture( resolution.x, resolution.y ) );
-			IECoreGL::Exception::throwIfError();
-			frameBuffer->validate();
-			FrameBuffer::ScopedBinding frameBufferBinding( *frameBuffer );
 
-			GLint prevProgram;
-			glGetIntegerv( GL_CURRENT_PROGRAM, &prevProgram );
-			glPushAttrib( GL_ALL_ATTRIB_BITS );
+			taskController->SetRenderViewport(pxr::GfVec4f(0, 0, width, height));
+			taskController->SetRenderBufferSize(pxr::GfVec2i(width, height));
 
-				glViewport( 0, 0, resolution.x, resolution.y );
-				glClearColor( 0.0, 0.0, 0.0, 0.0 );
-				glClearDepth( 1.0 );
-				glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
+			pxr::GfRange2f displayWindow(pxr::GfVec2f(0, 0), pxr::GfVec2f(width, height));
+			pxr::GfRect2i renderBufferRect(pxr::GfVec2i(0, 0), width, height);
+			pxr::GfRect2i dataWindow = renderBufferRect.GetIntersection(renderBufferRect);
+			pxr::CameraUtilFraming framing(displayWindow, dataWindow);
 
-				State::bindBaseState();
-				State *state = baseState();
-				state->bind();
+			taskController->SetFraming(framing);
 
-				camera->camera()->render( state );
+			// Imath::M44f transform = camera->getTransform();
 
-				/// \todo Should we separate these into different AOVs rendered
-				/// to different files? Or provide a mechanism for registering
-				/// transforms that we apply ourselves?
-				renderObjects( state, Visualisation::ColorSpace::Scene );
-				renderObjects( state, Visualisation::ColorSpace::Display );
+			// // IECoreGL::Camera* cam = camera->camera();
+			// auto r = pxr::GfMatrix4d( IECoreUSD::DataAlgo::toUSD( transform ) );
 
-				writeOutputs( frameBuffer.get() );
+			auto gfCam = camera->getGfCamera();
+			auto frustum = gfCam.GetFrustum();
+
+			taskController->SetFreeCameraMatrices(frustum.ComputeViewMatrix(),
+												frustum.ComputeProjectionMatrix());
+
+			// render
+
+			pxr::HdTaskSharedPtrVector tasks = taskController->GetRenderingTasks();
+			engine.Execute(renderIndex, &tasks);
+
+			// pxr::VtValue aov;
+			// pxr::HgiTextureHandle aovTexture;
+
+			// if (engine.GetTaskContextData(pxr::HdAovTokens->color, &aov)) {
+			// 	if (aov.IsHolding<pxr::HgiTextureHandle>()) {
+			// 		aovTexture = aov.Get<pxr::HgiTextureHandle>();
+			// 	}
+			// }
+
+			// uint32_t framebuffer = 0;
+			// pxr::HgiInterop interop;
+			// interop.TransferToApp(hgi.get(), aovTexture, pxr::HgiTextureHandle(),
+			// 					pxr::HgiTokens->OpenGL, pxr::VtValue(framebuffer),
+			// 					pxr::GfVec4i(0, 0, WIDTH, HEIGHT));
+
+			// drawTarget->WriteToFile("color", "/Users/raphaeljouretz/Desktop/test.png");
+			// drawTarget->Unbind();
+
 
 			glPopAttrib();
 			glUseProgram( prevProgram );
+		}
+
+		void renderBatch()
+		{
+			
 		}
 
 		void processQueue()
@@ -1377,6 +1596,7 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 		// resources on the main thread.
 		void removeDeletedObjects()
 		{
+			std::cout << "DELETE" << std::endl;
 			for( auto it = m_cameras.begin(); it != m_cameras.end(); )
 			{
 				// Cameras are referenced by both m_cameras and m_objects
@@ -1411,17 +1631,17 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 
 		void renderObjects( IECoreGL::State *currentState, Visualisation::ColorSpace colorSpace )
 		{
-			// IECoreGL::Selector *selector = IECoreGL::Selector::currentSelector();
+			IECoreGL::Selector *selector = IECoreGL::Selector::currentSelector();
 
-			// GLuint i = 1;
-			// for( const auto &o : m_objects )
-			// {
-			// 	if( selector )
-			// 	{
-			// 		selector->loadName( i++ );
-			// 	}
-			// 	o->render( currentState, m_selection, colorSpace );
-			// }
+			GLuint i = 1;
+			for( const auto &o : m_objects )
+			{
+				if( selector )
+				{
+					selector->loadName( i++ );
+				}
+				o->render( currentState, m_selection, colorSpace );
+			}
 		}
 
 		void writeOutputs( const FrameBuffer *frameBuffer )
@@ -1571,8 +1791,9 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 		// from m_editQueue.
 
 		unordered_map<InternedString, ConstOutputPtr> m_outputs;
-		using CameraMap = std::unordered_map<string, OpenGLCameraPtr>;
+		using CameraMap = std::unordered_map<string, HydraCameraPtr>;
 		CameraMap m_cameras;
+		HydraCameraPtr m_cam = nullptr;
 
 		using OpenGLObjectVector = std::vector<OpenGLObjectPtr>;
 		OpenGLObjectVector m_objects;
@@ -1586,14 +1807,13 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 		pxr::GlfDrawTargetRefPtr drawTarget;
 		pxr::HdxTaskController* taskController;
 		pxr::HdEngine engine;
-
-		int WIDTH = 500;
-		int HEIGHT = 500;
-
 		
 		pxr::HdRenderIndex* renderIndex;
 		pxr::HgiUniquePtr hgi;
 		pxr::HdDriver hgiDriver;
+		pxr::HdPluginRenderDelegateUniqueHandle renderDelegate;
+
+		pxr::CubeSceneIndexRefPtr sceneIndex;
 
 };
 

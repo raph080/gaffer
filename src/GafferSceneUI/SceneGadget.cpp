@@ -362,10 +362,6 @@ void SceneGadget::setRenderer( IECore::InternedString name )
 	{
 		newRenderer = IECoreScenePreview::Renderer::create( m_rendererName, IECoreScenePreview::Renderer::Interactive );
 	}
-	else if( m_rendererName == "Hydra" )
-	{
-		newRenderer = IECoreScenePreview::Renderer::create( m_rendererName, IECoreScenePreview::Renderer::Interactive );
-	}
 	else
 	{
 		newRenderer = new IECoreScenePreview::CompoundRenderer( {
