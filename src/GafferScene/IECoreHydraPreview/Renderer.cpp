@@ -1,39 +1,3 @@
-//////////////////////////////////////////////////////////////////////////
-//
-//  Copyright (c) 2017, Image Engine Design Inc. All rights reserved.
-//
-//  Redistribution and use in source and binary forms, with or without
-//  modification, are permitted provided that the following conditions are
-//  met:
-//
-//      * Redistributions of source code must retain the above
-//        copyright notice, this list of conditions and the following
-//        disclaimer.
-//
-//      * Redistributions in binary form must reproduce the above
-//        copyright notice, this list of conditions and the following
-//        disclaimer in the documentation and/or other materials provided with
-//        the distribution.
-//
-//      * Neither the name of John Haddon nor the names of
-//        any other contributors to this software may be used to endorse or
-//        promote products derived from this software without specific prior
-//        written permission.
-//
-//  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
-//  IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
-//  THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
-//  PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
-//  CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
-//  EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
-//  PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
-//  PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-//  LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
-//  NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-//  SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-//
-//////////////////////////////////////////////////////////////////////////
-
 #include "GafferScene/Private/IECoreScenePreview/Renderer.h"
 
 #include "GafferScene/Private/IECoreGLPreview/AttributeVisualiser.h"
@@ -163,6 +127,7 @@ class HydraSceneIndex : public pxr::HdSceneIndexBase {
          *
          */
         HydraSceneIndex(){
+			std::cout << "HYDRA SCENE INDEX DESTRUCTION" << std::endl;
 		}
 
 
@@ -174,11 +139,13 @@ class HydraSceneIndex : public pxr::HdSceneIndexBase {
 
 		void RemovePrim(pxr::SdfPath primPath)
 		{
+			std::cout << "remove prim" << std::endl;
 			auto it = prims.find (primPath);
 			if( it != prims.end() )
     			prims.erase(it);
-			
+			std::cout << "remove prim call" << std::endl;
 			_SendPrimsRemoved({primPath});
+			std::cout << "remove prim removed" << std::endl;
 		}
 
 		void SetDirtiedPrimEntries(HdSceneIndexObserver::DirtiedPrimEntries &entries)
@@ -269,6 +236,10 @@ PXR_NAMESPACE_CLOSE_SCOPE
 
 namespace
 {
+
+using Edit = std::function<void ()>;
+using EditQueue = tbb::concurrent_queue<Edit>;
+
 template<typename T>
 T *reportedCast( const IECore::RunTimeTyped *v, const char *type, const IECore::InternedString &name )
 {
@@ -295,171 +266,28 @@ T option( const IECore::Object *v, const IECore::InternedString &name, const T &
 	}
 	return defaultValue;
 }
-}
+
+} // namespace
 
 //////////////////////////////////////////////////////////////////////////
-// OpenGLAttributes
+// HydraAttributes
 //////////////////////////////////////////////////////////////////////////
 
 namespace
 {
 
-class OpenGLAttributes : public IECoreScenePreview::Renderer::AttributesInterface
+class HydraAttributes : public IECoreScenePreview::Renderer::AttributesInterface
 {
-
 	public :
 
-		OpenGLAttributes( const IECore::CompoundObject *attributes )
-			:	m_frustumMode( FrustumMode::WhenSelected ), m_visualisationStateColorSpace( Visualisation::ColorSpace::Display )
+		HydraAttributes( const IECore::CompoundObject *attributes )
 		{
-			const FloatData *visualiserScaleData = attributes->member<FloatData>( "gl:visualiser:scale" );
-			m_visualiserScale = visualiserScaleData ? visualiserScaleData->readable() : 1.0;
-
-			if( const StringData *drawFrustumData = attributes->member<StringData>( "gl:visualiser:frustum" ) )
-			{
-				if( drawFrustumData->readable() == "off" )
-				{
-					m_frustumMode = FrustumMode::Off;
-				}
-				else if( drawFrustumData->readable() == "on" )
-				{
-					m_frustumMode = FrustumMode::On;
-				}
-			}
-
-			m_state = static_pointer_cast<const State>(
-				CachedConverter::defaultCachedConverter()->convert( attributes )
-			);
-
-			IECoreGL::ConstStatePtr visualisationState;
-			m_visualisations = AttributeVisualiser::allVisualisations( attributes, visualisationState );
-
-			IECoreGL::ConstStatePtr lightVisualisationState;
-			m_lightVisualisations = LightVisualiser::allVisualisations( attributes, lightVisualisationState );
-
-			IECoreGL::ConstStatePtr lightFilterVisualisationState;
-			m_lightFilterVisualisations = LightFilterVisualiser::allVisualisations( attributes, lightFilterVisualisationState );
-
-			if( !m_lightFilterVisualisations.empty() )
-			{
-				if( !m_lightVisualisations.empty() )
-				{
-					// Light filter visualisers are in `m_lightFilterVisualisations` and light visualisers are in
-					// `m_lightVisualisations`. Combine them both into `m_lightVisualisations` so that
-					// filters attached to light locations are drawn as expected.
-					m_lightVisualisations.insert( m_lightVisualisations.end(),
-						m_lightFilterVisualisations.begin(), m_lightFilterVisualisations.end()
-					);
-				}
-				else
-				{
-					// If we don't have a light visualisation, but do have filters, make sure they're drawn.
-					m_lightVisualisations = m_lightFilterVisualisations;
-				}
-			}
-
-			if( visualisationState || lightVisualisationState || lightFilterVisualisationState )
-			{
-				StatePtr combinedState = new State( /* complete = */ false );
-
-				if( visualisationState )
-				{
-					combinedState->add( const_cast<State *>( visualisationState.get() ) );
-				}
-
-				if( lightVisualisationState )
-				{
-					combinedState->add( const_cast<State *>( lightVisualisationState.get() ) );
-				}
-
-				if( lightFilterVisualisationState )
-				{
-					combinedState->add( const_cast<State *>( lightFilterVisualisationState.get() ) );
-				}
-
-				m_visualisationState = combinedState;
-				auto solidState = m_visualisationState->get<IECoreGL::Primitive::DrawSolid>();
-				// The Visualiser API doesn't currently allow a colour space to
-				// be associated with the visualisation state. So we use a
-				// heuristic : if the state includes solid drawing then we
-				// assume Scene space. This allows custom mesh light texture
-				// visualisers to be shown with an appropriate colour transform.
-				// Otherwise we assume Display space, which gives us what we
-				// want for the coloured outline from our own mesh light
-				// visualiser.
-				if( !solidState || solidState->value() )
-				{
-					m_visualisationStateColorSpace = Visualisation::ColorSpace::Scene;
-				}
-			}
 		}
-
-		const State *state() const
-		{
-			return m_state.get();
-		}
-
-		const State *visualisationState( Visualisation::ColorSpace colorSpace ) const
-		{
-			return colorSpace == m_visualisationStateColorSpace ? m_visualisationState.get() : nullptr;
-		}
-
-		const IECoreGLPreview::Visualisations &visualisations() const
-		{
-			return m_visualisations;
-		}
-
-		const IECoreGLPreview::Visualisations &lightVisualisations() const
-		{
-			return m_lightVisualisations;
-		}
-
-		const IECoreGLPreview::Visualisations &lightFilterVisualisations() const
-		{
-			return m_lightFilterVisualisations;
-		}
-
-		float visualiserScale() const
-		{
-			return m_visualiserScale;
-		}
-
-		bool drawFrustum( bool isSelected ) const
-		{
-			switch ( m_frustumMode )
-			{
-				case FrustumMode::WhenSelected :
-					return isSelected;
-				case FrustumMode::On :
-					return true;
-				default :
-					return false;
-			}
-		}
-
-	private :
-
-		ConstStatePtr m_state;
-		ConstStatePtr m_visualisationState;
-		Visualisations m_visualisations;
-		Visualisations m_lightVisualisations;
-		Visualisations m_lightFilterVisualisations;
-
-		enum class FrustumMode : char
-		{
-			Off,
-			WhenSelected,
-			On
-		};
-		FrustumMode m_frustumMode;
-
-		float m_visualiserScale = 1.0f;
-		Visualisation::ColorSpace m_visualisationStateColorSpace;
 };
 
-IE_CORE_DECLAREPTR( OpenGLAttributes )
+IE_CORE_DECLAREPTR( HydraAttributes )
 
-} // namespace
+}
 
 //////////////////////////////////////////////////////////////////////////
 // HydraObject
@@ -473,17 +301,18 @@ class HydraObject : public IECoreScenePreview::Renderer::ObjectInterface
 
 	public :
 
-		HydraObject( const std::string &name, const IECore::Object *object, const ConstOpenGLAttributesPtr &attributes, pxr::HydraSceneIndexRefPtr sceneIndex)
+		HydraObject( const std::string &name, const IECore::Object *object, pxr::HydraSceneIndexRefPtr sceneIndex, EditQueue &editQueue)
 			:	m_primPath(name),
 				m_objectType( object ? object->typeId() : IECore::NullObjectTypeId ),
-				m_attributes( attributes ),
-				m_sceneIndex( sceneIndex)
+				m_sceneIndex( sceneIndex),
+				m_editQueue( editQueue )
 		{
 			m_prim = { pxr::TfToken(), nullptr };
 		}
 
 		~HydraObject() override
 		{
+			std::cout << "desctructor" << std::endl;
 			m_sceneIndex->RemovePrim(m_primPath);
 		}
 
@@ -496,7 +325,11 @@ class HydraObject : public IECoreScenePreview::Renderer::ObjectInterface
 		{
 			std::cout << "object transform: " << std::endl;
 			auto gfTransform = pxr::GfMatrix4d( IECoreUSD::DataAlgo::toUSD( transform ) );
-			SetPrimXform(gfTransform);
+
+			m_editQueue.push( [this, gfTransform]() {
+				SetPrimXform(gfTransform);
+			});
+			
 		}
 
 		void transform( const std::vector<Imath::M44f> &samples, const std::vector<float> &times ) override
@@ -508,7 +341,6 @@ class HydraObject : public IECoreScenePreview::Renderer::ObjectInterface
 		bool attributes( const IECoreScenePreview::Renderer::AttributesInterface *attributes ) override
 		{
 			std::cout << "objec attribute: " << attributes << std::endl;
-			ConstOpenGLAttributesPtr openGLAttributes = static_cast<const OpenGLAttributes *>( attributes );
 			return true;
 		}
 
@@ -531,9 +363,9 @@ class HydraObject : public IECoreScenePreview::Renderer::ObjectInterface
 	protected:
 		pxr::SdfPath m_primPath;
 		IECore::TypeId m_objectType;
-		ConstOpenGLAttributesPtr m_attributes;
 		pxr::HydraSceneIndexRefPtr m_sceneIndex;
 		pxr::HdSceneIndexPrim m_prim;
+		EditQueue &m_editQueue;
 
 		void SetPrimXform(pxr::GfMatrix4d xform)
 		{
@@ -573,13 +405,22 @@ class HydraObject : public IECoreScenePreview::Renderer::ObjectInterface
 
 IE_CORE_FORWARDDECLARE( HydraObject )
 
+}
+
+//////////////////////////////////////////////////////////////////////////
+// HydraMesh
+//////////////////////////////////////////////////////////////////////////
+
+namespace
+{
+
 class HydraMesh : public HydraObject
 {
 
 	public :
 
-		HydraMesh( const std::string &name, const IECoreScene::MeshPrimitive *mesh, const ConstOpenGLAttributesPtr &attributes, pxr::HydraSceneIndexRefPtr sceneIndex)
-			:	HydraObject( name, mesh, attributes, sceneIndex )
+		HydraMesh( const std::string &name, const IECoreScene::MeshPrimitive *mesh, pxr::HydraSceneIndexRefPtr sceneIndex, EditQueue &editQueue )
+			:	HydraObject( name, mesh, sceneIndex, editQueue  )
 		{
 			auto &verticesPerFace = mesh->verticesPerFace()->readable();
 			auto hdFvc = pxr::VtIntArray( verticesPerFace.begin(), verticesPerFace.end() );
@@ -688,7 +529,9 @@ class HydraCamera : public IECoreScenePreview::Renderer::ObjectInterface
 
 	public :
 
-		HydraCamera(const std::string name): m_name(name)
+		HydraCamera(const std::string name, EditQueue &editQueue)
+			: 	m_name(name), 
+				m_editQueue(editQueue)
 		{
 		}
 
@@ -728,7 +571,10 @@ class HydraCamera : public IECoreScenePreview::Renderer::ObjectInterface
 		void transform( const Imath::M44f &transform ) override
 		{
 			auto gfTransform = pxr::GfMatrix4d( IECoreUSD::DataAlgo::toUSD( transform ) );
-			m_gfCamera.SetTransform(gfTransform);
+
+			m_editQueue.push( [this, gfTransform]() {
+				m_gfCamera.SetTransform(gfTransform);
+			});
 		}
 
 		void transform( const std::vector<Imath::M44f> &samples, const std::vector<float> &times ) override
@@ -762,6 +608,7 @@ class HydraCamera : public IECoreScenePreview::Renderer::ObjectInterface
 		const IECoreScene::Camera *m_coreCamera;
 		std::string m_name;
 		pxr::GfCamera m_gfCamera;
+		EditQueue &m_editQueue;
 
 };
 
@@ -782,8 +629,8 @@ class OpenGLLight : public HydraObject
 
 	public :
 
-		OpenGLLight( const std::string &name, const IECore::Object *light, const ConstOpenGLAttributesPtr &attributes, pxr::HydraSceneIndexRefPtr sceneIndex)
-			:	HydraObject( name, light, attributes, sceneIndex )
+		OpenGLLight( const std::string &name, const IECore::Object *light, pxr::HydraSceneIndexRefPtr sceneIndex, EditQueue &editQueue )
+			:	HydraObject( name, light, sceneIndex, editQueue  )
 		{
 		}
 };
@@ -795,8 +642,8 @@ class OpenGLLightFilter : public HydraObject
 
 	public :
 
-		OpenGLLightFilter( const std::string &name, const IECore::Object *object, const ConstOpenGLAttributesPtr &attributes, pxr::HydraSceneIndexRefPtr sceneIndex)
-			:	HydraObject( name, object, attributes, sceneIndex )
+		OpenGLLightFilter( const std::string &name, const IECore::Object *object, pxr::HydraSceneIndexRefPtr sceneIndex, EditQueue &editQueue )
+			:	HydraObject( name, object, sceneIndex, editQueue  )
 		{
 		}
 };
@@ -831,6 +678,10 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 
 		~HydraRenderer() override
 		{
+			std::cout << "HYDRA RENDER DESTRUCTION" << std::endl;
+			processQueue();
+			removeDeletedObjects();
+			//CachedConverter::defaultCachedConverter()->clearUnused();
 		}
 
 		IECore::InternedString name() const override
@@ -912,7 +763,9 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 
 			IECore::MessageHandler::Scope s( m_messageHandler.get() );
 
-			OpenGLAttributesPtr result = new OpenGLAttributes( attributes );
+			HydraAttributesPtr result = new HydraAttributes( attributes );
+			m_editQueue.push( [ this, result ]() { m_attributes.push_back( result ); } );
+			
 			return result;
 		}
 
@@ -930,11 +783,16 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 			}
 			else
 			{
-				hdCam = new HydraCamera(name);
-				m_cameras[name] = hdCam;
+				hdCam = new HydraCamera(name, m_editQueue);
+
+				m_editQueue.push( [this, hdCam, name]() {
+					m_cameras[name] = hdCam;
+				} );	
 			}
 
-			hdCam->fromGafferCamera(camera);
+			m_editQueue.push( [hdCam, camera]() {
+				hdCam->fromGafferCamera(camera);
+			} );
 
 			return hdCam;
 		}
@@ -944,7 +802,8 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 			std::cout << "light: " << name << std::endl;
 			IECore::MessageHandler::Scope s( m_messageHandler.get() );
 
-			OpenGLLightPtr result = new OpenGLLight( name, object, static_cast<const OpenGLAttributes *>( attributes ), sceneIndex );
+			OpenGLLightPtr result = new OpenGLLight( name, object, sceneIndex, m_editQueue );
+			m_editQueue.push( [this, name, result]() { m_objects[name] = result; } );
 			return result;
 		}
 
@@ -953,7 +812,8 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 			std::cout << "lightfilter: " << name << std::endl;
 			IECore::MessageHandler::Scope s( m_messageHandler.get() );
 
-			OpenGLLightFilterPtr result = new OpenGLLightFilter( name, object, static_cast<const OpenGLAttributes *>( attributes ), sceneIndex );
+			OpenGLLightFilterPtr result = new OpenGLLightFilter( name, object, sceneIndex, m_editQueue );
+			m_editQueue.push( [this, name, result]() { m_objects[name] = result; } );
 			return result;
 		}
 
@@ -974,14 +834,14 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 			{
 				std::cout << "create Mesh" << std::endl;
 				auto *mesh = dynamic_cast<const IECoreScene::MeshPrimitive*>(object);
-				hdObj = new HydraMesh(name, mesh, static_cast<const OpenGLAttributes *>( attributes ), sceneIndex );
-				m_objects[name] = hdObj;
+				hdObj = new HydraMesh(name, mesh, sceneIndex, m_editQueue );
+				m_editQueue.push( [this, name, hdObj]() { m_objects[name] = hdObj; } );
 			}
 			else
 			{
 				std::cout << "unhandled object of type: " << object->typeId() <<std::endl;
-				hdObj = new HydraObject(name, object, static_cast<const OpenGLAttributes *>( attributes ), sceneIndex );
-				m_objects[name] = hdObj;
+				hdObj = new HydraObject(name, object, sceneIndex, m_editQueue );
+				m_editQueue.push( [this, name, hdObj]() { m_objects[name] = hdObj; } );
 			}
 
 			return hdObj;
@@ -1000,12 +860,7 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 
 			if( m_renderType == Interactive )
 			{
-				// We currently don't have any use for interactively rendering
-				// to outputs defined by the `output()` function. To facilitate
-				// interactive use in a CompoundRenderer (where the other
-				// renderer _is_ rendering to the outputs), we instead define a
-				// separate `gl:renderToCurrentContext` command which renders
-				// into a framebuffer managed by the client.
+				// see `gl:renderToCurrentContext` command
 			}
 			else
 			{
@@ -1054,7 +909,9 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 
 		void renderToCurrentContext( const IECore::CompoundDataMap &parameters )
 		{
+			processQueue();
 			removeDeletedObjects();
+			// CachedConverter::defaultCachedConverter()->clearUnused();
 
 			GLint prevProgram;
 			glGetIntegerv( GL_CURRENT_PROGRAM, &prevProgram );
@@ -1128,7 +985,7 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 				// gate population by _rootPath (which may be different), and then pass
 				// root.GetPath() to hydra as the root to draw from. Note that this
 				// produces incorrect results in UsdImagingDelegate for native instancing.
-				const pxr::SdfPathVector paths = {pxr::SdfPath("/stageSceneIndex")};
+				const pxr::SdfPathVector paths = {pxr::SdfPath("/")};
 
 				// init collection
 				pxr::HdRprimCollection renderCollection;
@@ -1221,6 +1078,11 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 
 		void processQueue()
 		{
+			Edit edit;
+			while( m_editQueue.try_pop( edit ) )
+			{
+				edit();
+			}
 		}
 
 		// During interactive renders, the client code controls the lifetime
@@ -1258,6 +1120,15 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 					++it;
 				}
 			}
+
+			m_attributes.erase(
+				remove_if(
+					m_attributes.begin(),
+					m_attributes.end(),
+					[]( const HydraAttributesPtr a ) { return a->refCount() <= 1; }
+				),
+				m_attributes.end()
+			);
 		}
 
 		void renderObjects( IECoreGL::State *currentState, Visualisation::ColorSpace colorSpace )
@@ -1266,42 +1137,6 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 
 		void writeOutputs( const FrameBuffer *frameBuffer )
 		{
-			IECore::MessageHandler::Scope s( m_messageHandler.get() );
-
-			for( const auto &namedOutput : m_outputs )
-			{
-				IECoreImage::ImagePrimitivePtr image = nullptr;
-				const string &data = namedOutput.second->getData();
-				if( data == "rgba" )
-				{
-					image = frameBuffer->getColor()->imagePrimitive();
-				}
-				else if( data == "rgb" )
-				{
-					image = frameBuffer->getColor()->imagePrimitive();
-					image->channels.erase( "A" );
-				}
-				else if( data == "z" )
-				{
-					image = frameBuffer->getDepth()->imagePrimitive();
-				}
-				else
-				{
-					IECore::msg( IECore::Msg::Warning, "IECoreGL::Renderer", fmt::format( "Unsupported data format \"{}\".", data ) );
-					return;
-				}
-
-				const string &type = namedOutput.second->getType();
-				IECore::WriterPtr writer = IECore::Writer::create( image, "tmp." + type );
-				if( !writer )
-				{
-					IECore::msg( IECore::Msg::Warning, "IECoreGL::Renderer", fmt::format( "Unsupported display type \"{}\".", type ) );
-					return;
-				}
-
-				writer->parameters()->parameter<IECore::FileNameParameter>( "fileName" )->setTypedValue( namedOutput.second->getName() );
-				writer->write();
-			}
 		}
 
 		DataPtr queryBound( const CompoundDataMap &parameters )
@@ -1339,7 +1174,8 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 
 		IECore::MessageHandlerPtr m_messageHandler;
 
-
+		// Queue used to pass edits from background threads to the render thread.
+		EditQueue m_editQueue;
 
 
 		unordered_map<InternedString, ConstOutputPtr> m_outputs;
@@ -1347,9 +1183,7 @@ class HydraRenderer final : public IECoreScenePreview::Renderer
 		HydraCameraPtr m_cam = nullptr;
 
 		std::unordered_map<string, HydraObjectPtr> m_objects;
-
-		using OpenGLAttributesVector = std::vector<OpenGLAttributesPtr>;
-		OpenGLAttributesVector m_attributes;
+		std::vector<HydraAttributesPtr> m_attributes;
 
 		// Registration with factory
 		static Renderer::TypeDescription<HydraRenderer> g_typeDescription;
